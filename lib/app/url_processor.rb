@@ -1,4 +1,6 @@
 class UrlProcessor
+  @@backoff_time = 1
+
   def initialize(url_rec)
     @url_rec=url_rec
   end
@@ -12,7 +14,7 @@ class UrlProcessor
         attempted_class="Parsers::#{parser_rec.class_name}"
         puts ">>> Running #{attempted_class} process for #{url}"
         begin
-          dom=Nokogiri::HTML(open(url, {ssl_verify_mode: OpenSSL::SSL::VERIFY_NONE}))
+          dom=Nokogiri::HTML get_url_stream(url)
         rescue OpenURI::HTTPError => e
           puts ">>> Error in fetching - ignoring because of #{e.message}"
         else
@@ -30,6 +32,24 @@ class UrlProcessor
   end
 
   private
+  def get_url_stream(url)
+    try_again=true
+
+    while try_again
+      begin
+        stream = open(url, {ssl_verify_mode: OpenSSL::SSL::VERIFY_NONE})
+      rescue Errno::ENETDOWN, SocketError => e
+        $stderr.write("Backing off for #{@@backoff_time} seconds\n")
+        sleep @@backoff_time
+        @@backoff_time *= 2
+      else
+        try_again=false
+      end
+    end
+
+    stream
+  end
+
   def store_json(json)
     url = @url_rec.url
     json[:crawl_list].each do |href|
@@ -41,8 +61,8 @@ class UrlProcessor
 
       unless TargetUrl.find_by_url(new_url)
         puts ">> adding new target #{new_url} for queue id #{@url_rec.my_queue_id}"
-
-        TargetUrl.create(url: new_url, first_added: Time.now, number_of_crawls: 0, my_queue_id: @url_rec.my_queue_id)
+        t=TargetUrl.new(url: new_url, first_added: Time.now, number_of_crawls: 0, my_queue_id: @url_rec.my_queue_id)
+        t.save
       end
     end
 
